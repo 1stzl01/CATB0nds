@@ -1,0 +1,128 @@
+# CAT Bond Pricing Model 
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+# ==============================================================================
+# SECTION 1: Define Spatial Grid (Area Perils)
+# ==============================================================================
+
+lat_points = np.linspace(25.0, 27.0, 5)
+lon_points = np.linspace(-82.0, -80.0, 5)
+area_peril_id = 1
+area_perils = []
+for lat in lat_points:
+    for lon in lon_points:
+        area_perils.append({'area_peril_id': area_peril_id, 'lat': lat, 'lon': lon})
+        area_peril_id += 1
+df_area_perils = pd.DataFrame(area_perils)
+
+# ==============================================================================
+# SECTION 2: Generate Synthetic Exposures
+# ==============================================================================
+
+num_locs = 100
+exposure = []
+np.random.seed(0)
+for loc_id in range(1, num_locs + 1):
+    if np.random.rand() < 0.7:
+        area_subset = df_area_perils[df_area_perils['area_peril_id'] <= 10]
+    else:
+        area_subset = df_area_perils[df_area_perils['area_peril_id'] > 10]
+    chosen = area_subset.sample(1).iloc[0]
+    tiv = np.random.choice([
+        np.random.uniform(0.5e6, 2e6),
+        np.random.uniform(5e6, 10e6)
+    ])
+    exposure.append({
+        'loc_id': loc_id,
+        'area_peril_id': chosen['area_peril_id'],
+        'vulnerability_id': 1,
+        'tiv': tiv
+    })
+df_exposure = pd.DataFrame(exposure)
+
+# ==============================================================================
+# SECTION 3: Define Vulnerability Curve
+# ==============================================================================
+
+vuln_curve = {i: min(1.0, 0.1 * i**1.5) for i in range(1, 11)}
+
+# ==============================================================================
+# SECTION 4: Generate Synthetic Events and Footprints
+# ==============================================================================
+
+num_events = 50
+footprints = []
+for event_id in range(1, num_events + 1):
+    affected_ids = np.random.choice(df_area_perils['area_peril_id'], size=10, replace=False)
+    for aid in affected_ids:
+        intensity_bin = np.random.randint(1, 11)
+        footprints.append({
+            'event_id': event_id,
+            'area_peril_id': aid,
+            'intensity_bin': intensity_bin
+        })
+df_footprints = pd.DataFrame(footprints)
+
+# ==============================================================================
+# SECTION 5: CAT Bond Simulation and Pricing Function
+# ==============================================================================
+
+def simulate_and_price(attachment, limit, risk_load, stress_factor):
+    """
+    Simulates catastrophe event losses and applies CAT bond pricing logic.
+    """
+    ylt = []
+    for event_id in range(1, num_events + 1):
+        loss = 0.0
+        affected = df_footprints[df_footprints['event_id'] == event_id]
+        for _, exp in df_exposure.iterrows():
+            match = affected[affected['area_peril_id'] == exp['area_peril_id']]
+            if not match.empty:
+                intensity_bin = match.iloc[0]['intensity_bin']
+                stressed_bin = min(10, int(intensity_bin * stress_factor))
+                damage_ratio = vuln_curve[stressed_bin]
+                loss += exp['tiv'] * damage_ratio
+        ylt.append({'event_id': event_id, 'loss': loss})
+    df_ylt = pd.DataFrame(ylt)
+
+    def payout_fn(loss): return max(min(loss - attachment, limit), 0)
+    df_ylt['payout'] = df_ylt['loss'].apply(payout_fn)
+
+    expected_loss = df_ylt['payout'].mean()
+    gross_premium = expected_loss * (1 + risk_load)
+    fair_spread = gross_premium / limit
+    p_attach = np.mean(df_ylt['loss'] > attachment)
+    p_exhaust = np.mean(df_ylt['loss'] > (attachment + limit))
+
+    # Visualize
+    plt.figure(figsize=(10, 5))
+    plt.hist(df_ylt['loss'], bins=20, color='skyblue', edgecolor='black')
+    plt.axvline(attachment, color='orange', linestyle='--', label='Attachment')
+    plt.axvline(attachment + limit, color='red', linestyle='--', label='Exhaustion')
+    plt.title("Simulated Event Losses")
+    plt.xlabel("Loss ($)")
+    plt.ylabel("Frequency")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+    # Print results
+    print(f"Expected Loss: ${expected_loss:,.2f}")
+    print(f"Gross Premium: ${gross_premium:,.2f}")
+    print(f"Fair Spread: {fair_spread:.2%}")
+    print(f"Probability of Attachment: {p_attach:.2%}")
+    print(f"Probability of Exhaustion: {p_exhaust:.2%}")
+
+# ==============================================================================
+# SECTION 6: Run the Simulation
+# ==============================================================================
+
+simulate_and_price(
+    attachment=5e6,
+    limit=10e6,
+    risk_load=0.25,
+    stress_factor=1.0  # Set to 1.2 for climate stress test
+)
